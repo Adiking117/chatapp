@@ -1,8 +1,10 @@
 import { Kafka } from "kafkajs";
+import dotenv from 'dotenv';
+dotenv.config();
 
 const kafka = new Kafka({
-    clientId:'adichat',
-    brokers:["192.168.29.71:9092"]
+    clientId:KAFKA_CLIENT_NAME,
+    brokers:[process.env.KAFKA_BROKER]
 })
 
 let producer = null; 
@@ -26,18 +28,21 @@ export async function produceMessage(message){
     return true;
 }
 
-export async function startMessageConsumer(){
-    console.log('Consumer is running')
-    const consumer = kafka.consumer({ groupId:"default"})
+export async function startMessageConsumer(io) {
+    console.log('Kafka consumer is running');
+    const consumer = kafka.consumer({ groupId: 'default' });
     await consumer.connect();
-    await consumer.subscribe({topic:"MESSAGES" , fromBeginning:true})
+    await consumer.subscribe({ topic: 'MESSAGES', fromBeginning: true });
     await consumer.run({
-        autoCommit:true,
-        eachMessage:async({message,pause})=>{
-            if(!message.value) return ;
-            console.log("New Message Recieved by kafka consumer")
-        }
-    })
+        autoCommit: true,
+        eachMessage: async ({ topic, partition, message }) => {
+            if (!message.value) return;
+            const parsedMessage = JSON.parse(message.value.toString());
+            console.log("New Message Received by Kafka consumer:", parsedMessage);
+            // Emit the message to all connected clients
+            io.emit('sendMessage', { user: parsedMessage.user, message: parsedMessage.message, id: parsedMessage.id });
+        },
+    });
 }
 
 export default kafka

@@ -1,37 +1,62 @@
 import { Server } from "socket.io";
 import Redis from 'ioredis';
 import { produceMessage } from "./kafka.js";
+import dotenv from 'dotenv';
+dotenv.config();
 
-const pub = new Redis({
-    host: "redis-38c28d91-student-0e4a.k.aivencloud.com",
-    port: 11009,
-    username: "default",
-    password: "AVNS_M5lqfWvBH4CmLEQ21z4"
-});
+const redisConfig = {
+    host: process.env.REDIS_HOST,
+    port: process.env.REDIS_PORT,
+    username: process.env.REDIS_USERNAME,
+    password: process.env.REDIS_PASSWORD
+};
 
-const sub = new Redis({
-    host: "redis-38c28d91-student-0e4a.k.aivencloud.com",
-    port: 11009,
-    username: "default",
-    password: "AVNS_M5lqfWvBH4CmLEQ21z4"
-});
+const pub = new Redis(redisConfig);
+const sub = new Redis(redisConfig);
 
 class SocketService {
     constructor() {
-        console.log("init socket server");
+        console.log("Initializing socket server");
         this._io = new Server({
             cors: {
                 allowedHeaders: ["*"],
                 origin: "*"
             }
         });
-        sub.subscribe("MESSAGES");
-        this.users = {}; // to keep track of connected users
+        this.users = {}; 
+        this.initRedisSubscription();
+    }
+
+    initRedisSubscription() {
+        sub.subscribe("MESSAGES", (err, count) => {
+            if (err) {
+                console.error("Failed to subscribe to Redis channel 'MESSAGES'", err);
+            } else {
+                console.log(`Subscribed to ${count} channel(s). Listening for updates on the 'MESSAGES' channel.`);
+            }
+        });
+
+        sub.on('message', async (channel, message) => {
+            if (channel === 'MESSAGES') {
+                console.log("New message from Redis:", message);
+                try {
+                    // Produce message to Kafka
+                    await produceMessage(message);
+                    console.log("Message produced to Kafka broker");
+                } catch (err) {
+                    console.error("Error producing message to Kafka:", err);
+                }
+            }
+        });
+
+        sub.on('error', (err) => {
+            console.error("Redis subscription error:", err);
+        });
     }
 
     initListeners() {
         const io = this.io;
-        console.log("Initialised socket listeners");
+        console.log("Initialized socket listeners");
 
         io.on('connect', (socket) => {
             console.log(`New Socket connected ${socket.id}`);
@@ -52,22 +77,16 @@ class SocketService {
                 }
             });
 
-            socket.on('message', async({ message, id }) => {
-                io.emit('sendMessage', { user: this.users[socket.id], message, id });
-                console.log(`New Message Received ${message}`);
-                // publish this msg to redis
-                await pub.publish('MESSAGES', JSON.stringify({ message }));
+            socket.on('message', async ({ message, id }) => {
+                console.log(`New Message Received: ${message}`);
+                try {
+                    // Publish message to Redis
+                    await pub.publish('MESSAGES', JSON.stringify({ message, id, user: this.users[socket.id] }));
+                    console.log(`Message published to Redis: ${message}`);
+                } catch (err) {
+                    console.error("Error publishing message to Redis:", err);
+                }
             });
-        });
-
-        sub.on('message', async (channel, message) => {
-            if (channel === 'MESSAGES') {
-                console.log("New message from redis ", message);
-                io.emit('message', message);
-                // message producing to kafka broker
-                await produceMessage(message);
-                console.log("message produced to kafka broker");
-            }
         });
     }
 
